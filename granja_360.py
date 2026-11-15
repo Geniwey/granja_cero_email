@@ -12,9 +12,9 @@ from supabase import create_client, Client
 
 warnings.filterwarnings("ignore")
 
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
-GROQ_KEY = os.environ.get("GROQ_KEY")
+SUPABASE_URL = (os.environ.get("SUPABASE_URL") or "").strip()
+SUPABASE_KEY = (os.environ.get("SUPABASE_KEY") or "").strip()
+GROQ_KEY = (os.environ.get("GROQ_KEY") or "").strip()
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
 
@@ -26,7 +26,7 @@ HEADERS = {
 ETTS_PROHIBIDAS = [
     "randstad", "adecco", "manpower", "hays", "michael page", "robert walters",
     "synergie", "gi group", "temporing", "nortempo", "grupo crit", "eurofirms",
-    "faster", "iman", "page personnel", "spring professional", "seleccion", "rrhh", "jobandtalent"
+    "faster", "iman", "page personnel", "spring professional", "jobandtalent"
 ]
 
 DOMINIOS_PROHIBIDOS = [
@@ -34,7 +34,7 @@ DOMINIOS_PROHIBIDOS = [
     "jooble", "opcionempleo", "trabajos.com", "paginasamarillas", "einforma",
     "infocif", "empresite", "axesor", "iberinform", "kompass", "europages",
     "facebook", "instagram", "twitter", "youtube", "google", "boe.es",
-    "sentry", "wix", "example", "wordpress", "cloudflare", "github"
+    "sentry", "wix", "example", "wordpress", "cloudflare", "github", "wikipedia"
 ]
 
 MODELOS_GROQ = [
@@ -138,26 +138,74 @@ def localizar_formulario_y_contexto(url):
 
     return url_contacto, texto_web
 
-def procesar_con_ia(canal, texto_bruto):
+def fallback_sin_ia(canal, titulo, web_o_link):
+    """Genera una ficha valida de respaldo si Groq falla o limita peticiones."""
+    empresa = titulo.split("-")[0].split("|")[0].strip()[:60]
+    if not empresa and web_o_link:
+        empresa = dominio_limpio(web_o_link).split(".")[0].capitalize()
+
+    if canal in ["LINKEDIN_DECISOR", "CONSULTOR_OEA", "ESCUELA_COMERCIO"]:
+        partes = titulo.split("-")
+        nombre = partes[0].strip()[:50] if len(partes) > 0 else "Directivo"
+        cargo = partes[1].strip()[:50] if len(partes) > 1 else "Operaciones / Pricing"
+        emp = partes[2].replace("| LinkedIn", "").strip()[:60] if len(partes) > 2 else empresa
+        gancho = f"Buenos días {nombre.split()[0]}, sigo su trayectoria en {emp} y me gustaría conectar para compartir sinergias en el sector transitario y aduanero."[:210]
+        cierre = (
+            f"Muchas gracias por conectar. Hemos desarrollado LogiQuote (https://logiquote-saas.vercel.app), una herramienta para calcular fletes, recargos THC/BAF y márgenes en 30 segundos sin depender de hojas de Excel. "
+            f"Puede probarla 14 días gratis sin compromiso y con el código LOGI10 tiene un 10% de descuento el primer mes."
+        )
+        return {
+            "es_valido": True,
+            "empresa": emp or empresa,
+            "nombre_contacto": nombre,
+            "cargo": cargo,
+            "lead_score": 86,
+            "mensaje_gancho": gancho,
+            "guion_cierre": cierre
+        }
+    elif canal == "PRENSA_COMENTARIO":
+        return {
+            "es_valido": True,
+            "empresa": f"Noticia: {titulo[:65]}",
+            "nombre_contacto": "Post Sectorial",
+            "cargo": "Visibilidad LinkedIn",
+            "lead_score": 72,
+            "mensaje_gancho": "Gran análisis del momento actual del sector. En un entorno de fletes tan volátil, agilizar los tiempos de cotización y controlar cada recargo THC/BAF marca la diferencia para proteger los márgenes de los transitarios.",
+            "guion_cierre": "Publicar comentario en LinkedIn desde perfil/página LogiQuote."
+        }
+    else:
+        return {
+            "es_valido": True,
+            "empresa": empresa,
+            "nombre_contacto": "Responsable Operaciones / Pricing",
+            "cargo": "Dirección Operaciones",
+            "lead_score": 82,
+            "mensaje_gancho": "Consulta operativa: agilización de cotizaciones marítimas/aéreas y control de márgenes",
+            "guion_cierre": (
+                "Estimado equipo de Operaciones y Pricing, les contactamos desde LogiQuote (https://logiquote-saas.vercel.app), software especializado en automatizar cotizaciones de fletes y recargos THC/BAF en 30 segundos. "
+                "Les invitamos a probar la plataforma durante 14 días de forma gratuita y sin compromiso (código LOGI10 para un 10% de descuento en el primer mes)."
+            )
+        }
+
+def procesar_con_ia(canal, texto_bruto, titulo="", web_o_link=""):
     if not GROQ_KEY:
-        print("  [!] Falta GROQ_KEY en secretos.")
-        return None
+        return fallback_sin_ia(canal, titulo, web_o_link)
 
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers_groq = {"Authorization": f"Bearer {GROQ_KEY}", "Content-Type": "application/json"}
 
     prompt = """Eres el Director Comercial B2B de LogiQuote (https://logiquote-saas.vercel.app), software español para transitarios y agentes de aduanas que automatiza el cálculo de fletes marítimos/aéreos, recargos THC/BAF y márgenes en 30 segundos sin Excel.
-Analiza el texto recibido y devuelve ÚNICAMENTE un JSON válido con estas 6 claves:
-- "es_valido": boolean (true SOLO si pertenece al sector transitario, aduanero, transporte internacional, comercio exterior o prensa logística en España; false si es ETT, irrelevante o competidor).
-- "empresa": string con el nombre limpio de la empresa o medio (ej: "Aduanas Pujol Rubió").
+Analiza el texto recibido y devuelve ÚNICAMENTE un JSON válido con estas 7 claves:
+- "es_valido": boolean (true si está relacionado con transporte internacional, transitarios, aduanas, logística, comercio exterior o noticias portuarias; false SOLO si es una ETT de trabajo temporal o algo totalmente ajeno).
+- "empresa": string con el nombre limpio de la empresa o medio.
 - "nombre_contacto": string con el nombre y apellido de la persona si aparece, o "Responsable Operaciones / Pricing".
 - "cargo": string con el cargo si aparece, o "Operaciones / Pricing".
-- "lead_score": entero de 0 a 100 (92 si es Empleo VIP; 88 si es Decisor LinkedIn; 84 si es Consultor OEA o Escuela; 78 si es Transitaria ATEIA; 72 si es Noticia Prensa).
+- "lead_score": entero de 0 a 100 (92 si es Empleo VIP; 88 si es Decisor LinkedIn; 84 si es Consultor OEA o Escuela; 78 si es Transitaria; 72 si es Noticia Prensa).
 - "mensaje_gancho": string corto y formal (tratando de usted):
    * Si canal es LINKEDIN_DECISOR, CONSULTOR_OEA o ESCUELA_COMERCIO: invitación a conectar en LinkedIn de MÁXIMO 210 caracteres, SIN enlaces.
-   * Si canal es PRENSA_COMENTARIO: comentario técnico experto (máximo 350 caracteres) para publicar en la noticia aportando visión sobre agilidad en cotizaciones y márgenes.
+   * Si canal es PRENSA_COMENTARIO: comentario técnico experto (máximo 350 caracteres) para publicar en LinkedIn aportando visión sobre agilidad en cotizaciones y márgenes.
    * Si canal es FORMULARIO_EMPLEO_VIP o FORMULARIO_ATEIA: asunto corto de 1 línea para el formulario web corporativo.
-- "guion_cierre": string formal (tratando de usted, 3-4 líneas) para cerrar tras conectar en LinkedIn o pegar en el formulario web /contacto de la empresa, mencionando siempre los 14 días de prueba gratuita sin compromiso y el código LOGI10 (10% de descuento el primer mes) en https://logiquote-saas.vercel.app (en el caso de CONSULTOR_OEA propone alianza con 25% de comisión recurrente de por vida; en ESCUELA_COMERCIO propone licencias educativas gratuitas)."""
+- "guion_cierre": string formal (tratando de usted, 3-4 líneas) para cerrar tras conectar en LinkedIn o pegar en el formulario web /contacto de la empresa, mencionando los 14 días de prueba gratuita sin compromiso y el código LOGI10 (10% de descuento el primer mes) en https://logiquote-saas.vercel.app (en CONSULTOR_OEA propone alianza con 25% de comisión recurrente; en ESCUELA_COMERCIO propone licencias educativas gratuitas)."""
 
     for modelo in MODELOS_GROQ:
         data = {
@@ -174,12 +222,17 @@ Analiza el texto recibido y devuelve ÚNICAMENTE un JSON válido con estas 6 cla
             res = requests.post(url, headers=headers_groq, json=data, timeout=15)
             if res.status_code == 200:
                 return json.loads(res.json()['choices'][0]['message']['content'])
-        except Exception:
+            else:
+                print(f"  [Aviso Groq {modelo} HTTP {res.status_code}]: {res.text[:120]}")
+        except Exception as e:
+            print(f"  [Aviso Groq Exception]: {e}")
             continue
-    return None
+
+    return fallback_sin_ia(canal, titulo, web_o_link)
 
 def guardar_oportunidad(registro):
     if not supabase:
+        print("  ❌ No hay cliente Supabase configurado.")
         return
     empresa = (registro.get("empresa") or "").strip()
     if len(empresa) < 3:
@@ -200,9 +253,9 @@ def canal_linkedin_decisores():
     print("\n--- Canal 1: LinkedIn X-Ray Decisores ---")
     queries = [
         'site:linkedin.com/in "Pricing Manager" transitario España',
-        'site:linkedin.com/in "Director de Operaciones" transitario Barcelona OR Valencia',
-        'site:linkedin.com/in "Jefe de Tráfico" aduanas España',
-        'site:linkedin.com/in "Responsable de Pricing" logistica maritima'
+        'site:linkedin.com/in "Director de Operaciones" transitario España',
+        'site:linkedin.com/in "Jefe de Tráfico" transitario OR aduanas',
+        'site:linkedin.com/in "Responsable de Pricing" logistica OR maritimo'
     ]
     for q in queries:
         resultados = buscar_dual(q, max_results=6)
@@ -214,7 +267,7 @@ def canal_linkedin_decisores():
             if "linkedin.com/in/" not in link:
                 continue
 
-            ia = procesar_con_ia("LINKEDIN_DECISOR", f"URL: {link}\nTítulo: {titulo}\nExtracto: {body}")
+            ia = procesar_con_ia("LINKEDIN_DECISOR", f"URL: {link}\nTítulo: {titulo}\nExtracto: {body}", titulo, link)
             if not ia or not ia.get("es_valido"):
                 continue
 
@@ -230,17 +283,17 @@ def canal_linkedin_decisores():
                 "guion_cierre": ia.get("guion_cierre") or "",
                 "sincronizado_sheet": False
             })
-            time.sleep(0.8)
+            time.sleep(0.6)
 
 # 2. CANAL FORMULARIOS WEB CORPORATIVOS (EMPRESAS CONTRATANDO + ATEIA)
 def canal_formularios_web():
     print("\n--- Canal 2: Formularios Web Corporativos (Empleo VIP + ATEIA) ---")
     queries = [
-        'oferta empleo pricing transitario España',
-        'oferta empleo cotizaciones maritimas aduanas',
         'transitario agente de aduanas Barcelona contacto',
         'transitario agente de aduanas Valencia contacto',
-        'transitario agente de aduanas Madrid Bilbao Algeciras contacto'
+        'transitario agente de aduanas Madrid contacto',
+        'transitario agente de aduanas Bilbao Algeciras contacto',
+        'empleo pricing cotizaciones transitario España'
     ]
     for q in queries:
         resultados = buscar_dual(q, max_results=6)
@@ -267,7 +320,7 @@ def canal_formularios_web():
                 continue
 
             canal = "FORMULARIO_EMPLEO_VIP" if "empleo" in q else "FORMULARIO_ATEIA"
-            ia = procesar_con_ia(canal, f"Web: {web_corp}\nTítulo: {titulo}\nExtracto: {body}\nTexto web: {texto_web[:250]}")
+            ia = procesar_con_ia(canal, f"Web: {web_corp}\nTítulo: {titulo}\nExtracto: {body}\nTexto web: {texto_web[:250]}", titulo, web_corp)
             if not ia or not ia.get("es_valido"):
                 continue
 
@@ -284,7 +337,7 @@ def canal_formularios_web():
                 "guion_cierre": ia.get("guion_cierre") or "",
                 "sincronizado_sheet": False
             })
-            time.sleep(0.8)
+            time.sleep(0.6)
 
 # 3. CANAL SECUESTRO DE ATENCION EN PRENSA LOGISTICA
 def canal_prensa_sectorial():
@@ -304,7 +357,7 @@ def canal_prensa_sectorial():
             if not link or not titulo:
                 continue
 
-            ia = procesar_con_ia("PRENSA_COMENTARIO", f"Noticia: {titulo}\nResumen: {body}")
+            ia = procesar_con_ia("PRENSA_COMENTARIO", f"Noticia: {titulo}\nResumen: {body}", titulo, link)
             if not ia or not ia.get("es_valido"):
                 continue
 
@@ -320,7 +373,7 @@ def canal_prensa_sectorial():
                 "guion_cierre": "Abrir noticia/LinkedIn y publicar comentario técnico desde perfil/página LogiQuote.",
                 "sincronizado_sheet": False
             })
-            time.sleep(0.8)
+            time.sleep(0.6)
 
 # 4. CANAL MULTIPLICADORES (CONSULTORES OEA Y ESCUELAS COMERCIO INTERNACIONAL)
 def canal_multiplicadores():
@@ -328,7 +381,7 @@ def canal_multiplicadores():
     queries = [
         'site:linkedin.com/in "Consultor OEA" España',
         'site:linkedin.com/in "Auditor Aduanero" OR "Asesor Aduanero" España',
-        'site:linkedin.com/in "Comercio Internacional" "Director" OR "Coordinador" escuela España'
+        'site:linkedin.com/in "Comercio Internacional" "Director" OR "Coordinador" España'
     ]
     for q in queries:
         resultados = buscar_dual(q, max_results=5)
@@ -341,7 +394,7 @@ def canal_multiplicadores():
                 continue
 
             subcanal = "ESCUELA_COMERCIO" if any(w in f"{titulo} {body}".lower() for w in ["escuela", "school", "cfgs", "master", "universidad", "formacion"]) else "CONSULTOR_OEA"
-            ia = procesar_con_ia(subcanal, f"URL: {link}\nTítulo: {titulo}\nExtracto: {body}")
+            ia = procesar_con_ia(subcanal, f"URL: {link}\nTítulo: {titulo}\nExtracto: {body}", titulo, link)
             if not ia or not ia.get("es_valido"):
                 continue
 
@@ -357,10 +410,11 @@ def canal_multiplicadores():
                 "guion_cierre": ia.get("guion_cierre") or "",
                 "sincronizado_sheet": False
             })
-            time.sleep(0.8)
+            time.sleep(0.6)
 
 if __name__ == "__main__":
     print("=== INICIANDO GRANJA LOGIQUOTE 360° (CERO-EMAIL Y CERO-TELÉFONO) ===")
+    print(f"Estado claves -> SUPABASE_URL: {'OK' if SUPABASE_URL else 'FALTA'} | SUPABASE_KEY: {'OK' if SUPABASE_KEY else 'FALTA'} | GROQ_KEY: {'OK (' + GROQ_KEY[:7] + '...)' if GROQ_KEY else 'FALTA'}")
     canal_linkedin_decisores()
     canal_formularios_web()
     canal_prensa_sectorial()

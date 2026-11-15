@@ -19,7 +19,7 @@ jobs:
           python-version: '3.11'
 
       - name: Instalar dependencias
-        run: pip install -r requirements.txt
+        run: pip install supabase requests beautifulsoup4 ddgs
 
       - name: Ejecutar Granja Multicanal Digital
         env:

@@ -19,7 +19,7 @@ jobs:
           python-version: '3.11'
 
       - name: Instalar dependencias
-        run: pip install supabase requests beautifulsoup4 ddgs
+        run: pip install supabase requests beautifulsoup4 ddgs googlesearch-python
 
       - name: Ejecutar Granja Multicanal Digital
         env:

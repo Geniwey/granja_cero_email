@@ -3,12 +3,13 @@ name: Granja LogiQuote 360 FULL AUTO
 on:
   workflow_dispatch:
   schedule:
-    # Corre LUNES, MIÉRCOLES y VIERNES a las 08:30 AM UTC (horario laboral España)
-    - cron: '30 8 * * 1,3,5'
+    # Corre LUNES, MIÉRCOLES y VIERNES a las 08:17 AM UTC (09:17 hora España)
+    - cron: '17 8 * * 1,3,5'
 
 jobs:
   cazar_y_disparar_full_auto:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Clonar código
         uses: actions/checkout@v4
